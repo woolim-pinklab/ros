@@ -29,6 +29,10 @@ class DistTurtleServer(Node):
         self.action_server = ActionServer(
             self, DistTurtle, 'dist_turtle', self.execute_callback,
             callback_group=cb_group)
+        
+        self.declare_parameter("quantile_time", 0.75)
+        self.declare_parameter("almost_goal_time", 0.95)
+
 
     def pose_callback(self, msg):
         self.current_pose = msg
