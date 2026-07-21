@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>🐢⚽ turtle soccer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; background: #0b1220; font-family: system-ui, sans-serif; }
+  #hud {
+    position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+    color: #fff; text-align: center; pointer-events: none; text-shadow: 0 2px 8px #000;
+  }
+  #score { font-size: 44px; font-weight: 800; letter-spacing: 2px; }
+  #msg { font-size: 20px; margin-top: 4px; opacity: .9; }
+  .team {
+    position: fixed; top: 16px; color: #fff; font-size: 14px;
+    background: rgba(0,0,0,.45); padding: 10px 14px; border-radius: 8px;
+    min-width: 160px; pointer-events: none;
+  }
+  /* 각 팀 패널은 그 팀이 공략하는 골대 쪽에 둔다 (blue=왼쪽, red=오른쪽) */
+  #teamBlue { left: 16px; border-top: 3px solid #3b82f6; }
+  #teamRed  { right: 16px; border-top: 3px solid #ef4444; }
+  .team h3 { font-size: 13px; margin-bottom: 6px; font-weight: 700; letter-spacing: .5px; }
+  #teamBlue h3 { color: #93c5fd; }
+  #teamRed  h3 { color: #fca5a5; }
+  .team .row { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; }
+  .team .frozen { opacity: .45; }
+  .team .empty { opacity: .5; font-size: 13px; }
+  .team .cnt { font-weight: 400; opacity: .65; }
+  #conn {
+    position: fixed; bottom: 12px; left: 12px; color: #8aa; font-size: 13px;
+    background: rgba(0,0,0,.4); padding: 6px 10px; border-radius: 6px;
+  }
+  #help {
+    position: fixed; bottom: 12px; right: 12px; color: #9ab; font-size: 12px;
+    background: rgba(0,0,0,.4); padding: 8px 12px; border-radius: 6px; line-height: 1.7;
+  }
+  #help code { color: #ffd166; }
+  /* 하단 가운데 조작 패널 — 여기서 참가/이동/슛을 한다 */
+  #panel {
+    position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 8px; align-items: center;
+    background: rgba(0,0,0,.55); padding: 10px 14px; border-radius: 10px;
+  }
+  #panel input {
+    width: 130px; font-size: 15px; padding: 7px 10px; border-radius: 7px;
+    border: 1px solid #3a4a5a; background: #0e1726; color: #fff; outline: none;
+  }
+  #panel button {
+    font-size: 15px; font-weight: 700; padding: 7px 16px; border: none;
+    border-radius: 7px; cursor: pointer; color: #fff; background: #2563eb;
+  }
+  #panel button:hover { filter: brightness(1.12); }
+  #shootBtn { background: #f59e0b; color: #1a1200; }
+  #leaveBtn { background: #64748b; }
+  #meLabel { color: #fff; font-size: 15px; font-weight: 700; padding: 0 4px; }
+  #meLabel small { font-weight: 400; opacity: .7; }
+  .hidden { display: none !important; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+}}
+</script>
+</head>
+<body>
+<div id="hud"><div id="score">0 : 0</div><div id="msg">연결 중…</div></div>
+<div id="teamBlue" class="team"><h3>BLUE <span class="cnt" id="cntBlue">0명</span></h3>
+  <div id="listBlue" class="empty">아직 없음</div></div>
+<div id="teamRed" class="team"><h3>RED <span class="cnt" id="cntRed">0명</span></h3>
+  <div id="listRed" class="empty">아직 없음</div></div>
+<div id="conn">ws 연결 대기…</div>
+<div id="help">
+  참가 후 <code>필드 클릭</code>=이동 · <code>Space</code> 또는 슛 버튼=슛<br>
+  (터미널 참가도 됨: <code>/register</code> · <code>/move_to</code> · <code>/shoot</code>)
+</div>
+<div id="panel">
+  <!-- 참가 전: 이름 입력 -->
+  <div id="joinRow" style="display:flex; gap:8px; align-items:center;">
+    <input id="nameInput" maxlength="12" placeholder="이름 입력" />
+    <button id="joinBtn">참가</button>
+  </div>
+  <!-- 참가 후: 슛 / 나가기 -->
+  <div id="playRow" class="hidden" style="display:flex; gap:8px; align-items:center;">
+    <span id="meLabel"></span>
+    <button id="shootBtn">⚽ 슛 (Space)</button>
+    <button id="leaveBtn">나가기</button>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// 심판 좌표를 three.js 좌표(가운데 0)로 변환.
+// 경기장 크기는 첫 상태 프레임에서 받아 채운다(축구장처럼 가로로 길다).
+let CX = 8.0, CY = 5.5;
+const gx = v => v - CX;             // x → three.js X
+const gz = v => -(v - CY);          // y(위로 +) → three.js Z(앞으로 -)
+
+// 심판이 도는 머신 주소. 심판과 뷰어를 다른 머신에서 돌릴 수 있게
+// ?host=192.168.0.10 (필요하면 &port=8765) 로 지정한다.
+// 없으면 이 페이지를 연 호스트를, 그것도 없으면(file:// 로 연 경우) localhost 를 쓴다.
+const Q = new URLSearchParams(location.search);
+const HOST = Q.get('host') || location.hostname || 'localhost';
+const PORT = Q.get('port') || '8765';
+const WS_URL = `ws://${HOST}:${PORT}`;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b1220);
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(0, 11, 12);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0, 0);
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x334455, 1.1));
+const sun = new THREE.DirectionalLight(0xffffff, 1.0);
+sun.position.set(6, 12, 6); scene.add(sun);
+
+// ---- 경기장 ---- (첫 상태 프레임의 크기에 맞춰 만든다)
+const fieldGroup = new THREE.Group(); scene.add(fieldGroup);
+const lineMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: .55 });
+
+function buildField(f) {
+  fieldGroup.clear();
+  const hw = (f.x_max - f.x_min) / 2;   // 가로 반폭
+  const hh = (f.y_max - f.y_min) / 2;   // 세로 반폭
+
+  const pitch = new THREE.Mesh(
+    new THREE.PlaneGeometry(hw * 2, hh * 2),
+    new THREE.MeshStandardMaterial({ color: 0x1f7a3d }));
+  pitch.rotation.x = -Math.PI / 2;
+  fieldGroup.add(pitch);
+
+  // 터치라인 + 하프라인
+  fieldGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(
+    [[-hw,-hh],[hw,-hh],[hw,hh],[-hw,hh],[-hw,-hh]]
+      .map(([a, b]) => new THREE.Vector3(a, .02, b))), lineMat));
+  fieldGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(
+    [new THREE.Vector3(0, .02, -hh), new THREE.Vector3(0, .02, hh)]), lineMat));
+
+  // 센터서클
+  const circ = new THREE.Mesh(new THREE.RingGeometry(1.4, 1.5, 48),
+    new THREE.MeshBasicMaterial(
+      { color: 0xffffff, transparent: true, opacity: .5, side: THREE.DoubleSide }));
+  circ.rotation.x = -Math.PI / 2; circ.position.y = .02;
+  fieldGroup.add(circ);
+
+  // 가로로 길어진 만큼 카메라를 뒤로 뺀다
+  camera.position.set(0, hw * 1.15, hh * 1.9);
+  controls.target.set(0, 0, 0);
+  controls.update();
+}
+
+// ---- 골대: 왼쪽=blue 가 공략, 오른쪽=red 가 공략 ----
+let goalGroup = new THREE.Group(); scene.add(goalGroup);
+function makeGoal(xCoord, cy, gh, color, emissive) {
+  const mat = new THREE.MeshStandardMaterial(
+    { color, emissive, emissiveIntensity: .4 });
+  const gxPos = gx(xCoord);
+  const postGeo = new THREE.CylinderGeometry(.1, .1, 1.3, 12);
+  for (const zc of [gz(cy - gh), gz(cy + gh)]) {
+    const p = new THREE.Mesh(postGeo, mat);
+    p.position.set(gxPos, .65, zc); goalGroup.add(p);
+  }
+  const bar = new THREE.Mesh(new THREE.BoxGeometry(.1, .1, gh * 2), mat);
+  bar.position.set(gxPos, 1.3, gz(cy)); goalGroup.add(bar);
+}
+function buildGoal(f) {
+  goalGroup.clear();
+  // 골대는 그 골대를 '지키는' 팀의 것이다 — 그 팀 색으로 칠하고 그 팀 키퍼가 선다.
+  //   왼쪽  = red 의 골대 (blue 가 공략)
+  //   오른쪽 = blue 의 골대 (red 가 공략)
+  makeGoal(f.goal_left_x, f.goal_center_y, f.goal_half, 0xef4444, 0x551111);  // red 골대
+  makeGoal(f.goal_right_x, f.goal_center_y, f.goal_half, 0x3b82f6, 0x102a55); // blue 골대
+}
+
+// ---- 이름표 / 정지 카운트다운 스프라이트 ----
+function makeLabel(text) {
+  const cv = document.createElement('canvas');
+  cv.width = 256; cv.height = 64;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = 'rgba(0,0,0,.6)';
+  ctx.beginPath(); ctx.roundRect(8, 8, 240, 48, 12); ctx.fill();
+  ctx.font = 'bold 30px system-ui, sans-serif';
+  ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, 128, 33);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial(
+    { map: new THREE.CanvasTexture(cv), transparent: true, depthTest: false }));
+  sp.scale.set(1.7, 0.42, 1);
+  sp.position.set(0, 1.45, 0);
+  return sp;
+}
+
+function makeCountdown() {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = 128;
+  const tex = new THREE.CanvasTexture(cv);
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial(
+    { map: tex, transparent: true, depthTest: false }));
+  sp.scale.set(0.85, 0.85, 1);
+  sp.position.set(0, 2.15, 0);
+  sp.visible = false;
+  return { sprite: sp, cv, tex, last: null };
+}
+
+// 남은 정지 시간을 링 게이지 + 숫자로 그린다
+function drawCountdown(cd, left, total) {
+  const key = left.toFixed(1);
+  if (cd.last === key) return;      // 값이 그대로면 텍스처를 다시 안 올린다
+  cd.last = key;
+  const ctx = cd.cv.getContext('2d');
+  ctx.clearRect(0, 0, 128, 128);
+  ctx.beginPath(); ctx.arc(64, 64, 46, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fill();
+  ctx.beginPath();
+  ctx.arc(64, 64, 46, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (left / total));
+  ctx.lineWidth = 9; ctx.strokeStyle = '#ffd166'; ctx.stroke();
+  ctx.font = 'bold 42px system-ui, sans-serif';
+  ctx.fillStyle = '#ffd166'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(left.toFixed(1), 64, 68);
+  cd.tex.needsUpdate = true;
+}
+
+// ---- 거북이 ----  정면 = 로컬 +X (theta=0 이 오른쪽)
+const SKIN = 0x5aa02c;   // 살색(초록)
+const TEAM_COLOR = { blue: 0x3b82f6, red: 0xef4444 };
+const TEAM_CSS = { blue: '#3b82f6', red: '#ef4444' };
+const KEEPER_COLOR = { blue: 0x1e40af, red: 0x991b1b };   // 키퍼는 진한 팀색
+
+function makeTurtle(shellColor) {
+  const g = new THREE.Group();
+  const mats = [];
+  const track = m => { m.userData.baseOpacity = m.opacity; mats.push(m); return m; };
+  const skinMat = track(new THREE.MeshStandardMaterial({ color: SKIN }));
+
+  // 등껍질(팀색 돔) — 살짝 눌러서 거북이답게
+  const shell = new THREE.Mesh(
+    new THREE.SphereGeometry(0.55, 24, 16, 0, Math.PI * 2, 0, Math.PI / 2),
+    track(new THREE.MeshStandardMaterial(
+      { color: shellColor, emissive: shellColor, emissiveIntensity: .12, roughness: .6 })));
+  shell.scale.y = 0.62; shell.position.y = 0.38; g.add(shell);
+
+  // 등껍질 테두리 링
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(0.53, 0.055, 8, 28),
+    track(new THREE.MeshStandardMaterial({ color: 0x2e6b1e })));
+  rim.rotation.x = Math.PI / 2; rim.position.y = 0.38; g.add(rim);
+
+  // 등껍질 무늬(육각 판 5개) — 돔 표면 높이에 맞춰 얹는다
+  //   돔: 중심 y=0.38, 반지름 R=0.55 를 y축으로 0.62 배 눌렀으므로
+  //   중심에서 거리 r 인 곳의 표면 높이 = 0.38 + 0.62*sqrt(R² - r²)
+  const R = 0.55;
+  const plateMat = track(new THREE.MeshStandardMaterial(
+    { color: 0x000000, transparent: true, opacity: .18 }));
+  for (const [px, pz] of [[0, 0], [0.27, 0], [-0.27, 0], [0, 0.27], [0, -0.27]]) {
+    const r = Math.hypot(px, pz);
+    const plate = new THREE.Mesh(new THREE.CircleGeometry(0.12, 6), plateMat);
+    plate.rotation.x = -Math.PI / 2;
+    plate.position.set(px, 0.38 + 0.62 * Math.sqrt(R * R - r * r) + 0.005, pz);
+    g.add(plate);
+  }
+
+  // 배(바닥 원반)
+  const belly = new THREE.Mesh(new THREE.CylinderGeometry(0.53, 0.53, 0.13, 20),
+    track(new THREE.MeshStandardMaterial({ color: 0xd9c48a })));
+  belly.position.y = 0.18; g.add(belly);
+
+  // 머리 + 눈
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.2, 16, 12), skinMat);
+  head.scale.x = 1.2; head.position.set(0.62, 0.31, 0); g.add(head);
+  const eyeMat = track(new THREE.MeshStandardMaterial({ color: 0x111111 }));
+  for (const s of [-1, 1]) {
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 8), eyeMat);
+    eye.position.set(0.75, 0.38, 0.09 * s); g.add(eye);
+  }
+
+  // 네 다리(납작한 지느러미)
+  const legGeo = new THREE.SphereGeometry(0.15, 10, 8);
+  for (const [lx, lz] of [[0.38, 0.38], [0.38, -0.38], [-0.38, 0.38], [-0.38, -0.38]]) {
+    const leg = new THREE.Mesh(legGeo, skinMat);
+    leg.scale.set(1, 0.45, 1); leg.position.set(lx, 0.16, lz); g.add(leg);
+  }
+
+  // 꼬리(뒤쪽 -X)
+  const tail = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.32, 10), skinMat);
+  tail.rotation.z = Math.PI / 2; tail.position.set(-0.66, 0.25, 0); g.add(tail);
+
+  scene.add(g);
+  return { group: g, mats };
+}
+
+// 정지 중이면 반투명하게
+function setFrozen(t, frozen) {
+  if (t.frozenNow === frozen) return;
+  t.frozenNow = frozen;
+  for (const m of t.mats) {
+    m.transparent = frozen ? true : (m.userData.baseOpacity < 1);
+    m.opacity = frozen ? m.userData.baseOpacity * 0.35 : m.userData.baseOpacity;
+    m.needsUpdate = true;
+  }
+}
+
+const ball = new THREE.Mesh(new THREE.SphereGeometry(0.3, 24, 24),
+  new THREE.MeshStandardMaterial({ color: 0xffffff }));
+ball.position.y = 0.3; scene.add(ball);
+
+// ---- 거북이들: 참가하면 생기고 퇴장하면 사라진다 ----
+const turtles = new Map();   // name -> {group, mats, cd}
+
+function addPlayer(p) {
+  const t = makeTurtle(TEAM_COLOR[p.team] ?? 0x888888);
+  t.group.add(makeLabel(p.name));       // 머리 위 이름표
+  t.cd = makeCountdown();
+  t.group.add(t.cd.sprite);
+  turtles.set(p.name, t);
+  return t;
+}
+
+// 키퍼도 같은 방식으로 만들되 진한 팀색 + 고정 이름표
+const keepers = new Map();
+function addKeeper(k) {
+  const t = makeTurtle(KEEPER_COLOR[k.team] ?? 0x555555);
+  t.group.add(makeLabel('keeper'));
+  keepers.set(k.name, t);
+  return t;
+}
+
+function removePlayer(name) {
+  const t = turtles.get(name);
+  if (!t) return;
+  scene.remove(t.group);
+  t.group.traverse(o => {
+    if (o.geometry) o.geometry.dispose();
+    if (o.material) o.material.dispose();
+  });
+  turtles.delete(name);
+}
+
+// ---- WebSocket ----
+const scoreEl = document.getElementById('score');
+const msgEl = document.getElementById('msg');
+const connEl = document.getElementById('conn');
+const listEl = { blue: document.getElementById('listBlue'),
+                 red: document.getElementById('listRed') };
+const cntEl = { blue: document.getElementById('cntBlue'),
+                red: document.getElementById('cntRed') };
+let goalBuilt = false;
+
+// ---- 조작(뷰어 → 심판) 상태 ----
+let ws = null;               // connect() 에서 채운다 (명령도 이걸로 보낸다)
+let myName = null;           // 참가하면 내가 조종하는 거북이 이름
+const panelEls = {
+  joinRow: document.getElementById('joinRow'),
+  playRow: document.getElementById('playRow'),
+  nameInput: document.getElementById('nameInput'),
+  joinBtn: document.getElementById('joinBtn'),
+  shootBtn: document.getElementById('shootBtn'),
+  leaveBtn: document.getElementById('leaveBtn'),
+  meLabel: document.getElementById('meLabel'),
+};
+
+function send(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+}
+
+// 심판이 명령에 답한 것(참가/퇴장/슛 결과)을 처리한다
+function handleReply(s) {
+  if (s.type === 'join') {
+    if (s.ok) {
+      myName = s.name;
+      panelEls.joinRow.classList.add('hidden');
+      panelEls.playRow.classList.remove('hidden');
+      panelEls.meLabel.innerHTML = `${s.name} <small>(${s.team})</small>`;
+    } else {
+      msgEl.textContent = '참가 실패: ' + s.message;
+    }
+  } else if (s.type === 'leave') {
+    myName = null;
+    panelEls.playRow.classList.add('hidden');
+    panelEls.joinRow.classList.remove('hidden');
+  } else if ((s.type === 'shoot' || s.type === 'move') && !s.ok) {
+    msgEl.textContent = s.message;   // 헛발질 / 정지 중 / 참가 안 됨 안내
+  }
+}
+
+// 내가 조종하는 거북이 발밑에 노란 링을 띄워 표시한다
+const myMarker = new THREE.Mesh(
+  new THREE.RingGeometry(0.62, 0.8, 36),
+  new THREE.MeshBasicMaterial(
+    { color: 0xffd166, transparent: true, opacity: .9, side: THREE.DoubleSide }));
+myMarker.rotation.x = -Math.PI / 2;
+myMarker.position.y = 0.03;
+myMarker.visible = false;
+scene.add(myMarker);
+
+// 팀별 인원 수와 명단(넣은 골 수 포함)을 그린다
+function renderTeams(players) {
+  for (const team of ['blue', 'red']) {
+    const mates = players.filter(p => p.team === team);
+    cntEl[team].textContent = `${mates.length}명`;
+    const el = listEl[team];
+    if (!mates.length) {
+      el.className = 'empty';
+      el.textContent = '아직 없음';
+      continue;
+    }
+    el.className = '';
+    el.innerHTML = mates.map(p =>
+      `<div class="row ${p.frozen ? 'frozen' : ''}">` +
+      `<span>${p.name}${p.frozen ? ' ⏸' : ''}</span>` +
+      `<span>${p.goals}⚽</span></div>`).join('');
+  }
+}
+
+function connect() {
+  ws = new WebSocket(WS_URL);
+  ws.onopen = () => { connEl.textContent = `연결됨: ${WS_URL}`; };
+  ws.onclose = () => {
+    // 다른 머신의 심판을 보려면 ?host= 로 주소를 알려줘야 한다
+    connEl.textContent =
+      `${WS_URL} 연결 안 됨 — 재시도 중… (다른 머신이면 ?host=심판IP 를 붙이자)`;
+    setTimeout(connect, 1000);
+  };
+  ws.onerror = () => ws.close();
+  ws.onmessage = (ev) => {
+    const s = JSON.parse(ev.data);
+    if (s.type) { handleReply(s); return; }   // 명령에 대한 응답
+    if (!goalBuilt) {
+      CX = s.field.center_x; CY = s.field.center_y;
+      buildField(s.field);
+      buildGoal(s.field);
+      goalBuilt = true;
+    }
+    const freezeTotal = s.field.freeze_time || 1.0;
+
+    // 선수 추가/갱신
+    const seen = new Set();
+    for (const p of s.players) {
+      seen.add(p.name);
+      const t = turtles.get(p.name) || addPlayer(p);
+      t.group.position.set(gx(p.x), 0, gz(p.y));
+      t.group.rotation.y = -p.theta;
+      setFrozen(t, p.frozen);
+      t.cd.sprite.visible = p.frozen;
+      if (p.frozen) drawCountdown(t.cd, p.frozen_left, freezeTotal);
+    }
+    // 퇴장한 선수 제거
+    for (const name of [...turtles.keys()]) {
+      if (!seen.has(name)) removePlayer(name);
+    }
+
+    // 골대마다 키퍼 하나씩 — 공이 오는 쪽을 바라본다
+    for (const k of s.keepers) {
+      const t = keepers.get(k.name) || addKeeper(k);
+      t.group.position.set(gx(k.x), 0, gz(k.y));
+      t.group.rotation.y = -k.theta;
+    }
+
+    ball.position.set(gx(s.ball.x), 0.3, gz(s.ball.y));
+    scoreEl.textContent = `${s.score.blue} : ${s.score.red}`;
+    msgEl.textContent = s.msg;
+    renderTeams(s.players);
+
+    // 내 거북이 발밑에 표시 링을 옮긴다 (한 프레임 늦게 생겨도 다음 프레임에 잡힌다)
+    const mine = myName ? turtles.get(myName) : null;
+    if (mine) {
+      myMarker.position.set(mine.group.position.x, 0.03, mine.group.position.z);
+      myMarker.visible = true;
+    } else {
+      myMarker.visible = false;
+    }
+  };
+}
+connect();
+
+// ---- 조작 입력: 참가 / 슛 / 나가기 ----
+function doJoin() {
+  const n = panelEls.nameInput.value.trim();
+  if (!n) { panelEls.nameInput.focus(); return; }
+  send({ cmd: 'join', name: n });
+}
+function doShoot() { if (myName) send({ cmd: 'shoot', name: myName, power: 1.0 }); }
+panelEls.joinBtn.onclick = doJoin;
+panelEls.nameInput.addEventListener('keydown', e => { if (e.key === 'Enter') doJoin(); });
+panelEls.shootBtn.onclick = doShoot;
+panelEls.leaveBtn.onclick = () => { if (myName) send({ cmd: 'leave', name: myName }); };
+addEventListener('keydown', e => {
+  // 스페이스바로 슛 (이름 입력 중일 땐 제외)
+  if (e.code === 'Space' && myName && document.activeElement !== panelEls.nameInput) {
+    e.preventDefault();
+    doShoot();
+  }
+});
+
+// ---- 클릭한 필드 지점으로 이동 ----
+// 왼쪽 드래그는 카메라 회전이므로, 거의 안 움직인 '클릭'만 이동으로 본다.
+const raycaster = new THREE.Raycaster();
+const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+let downAt = null;
+renderer.domElement.addEventListener('pointerdown', e => {
+  if (e.button === 0) downAt = { x: e.clientX, y: e.clientY };
+});
+renderer.domElement.addEventListener('pointerup', e => {
+  if (e.button !== 0 || !downAt) return;
+  const moved = Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y);
+  downAt = null;
+  if (moved > 6 || !myName) return;             // 드래그거나 미참가면 무시
+  const ndc = new THREE.Vector2(
+    (e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  raycaster.setFromCamera(ndc, camera);
+  const hit = new THREE.Vector3();
+  if (!raycaster.ray.intersectPlane(groundPlane, hit)) return;
+  // three.js 좌표 → 심판 좌표 (gx, gz 의 역변환)
+  send({ cmd: 'move', name: myName, x: hit.x + CX, y: CY - hit.z });
+});
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+(function loop() {
+  requestAnimationFrame(loop);
+  controls.update();
+  renderer.render(scene, camera);
+})();
+</script>
+</body>
+</html>

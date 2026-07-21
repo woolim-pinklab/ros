@@ -1,0 +1,10 @@
+# 이동 서비스 — 내 거북이를 목표 지점까지 데려가고, 도착하면 응답한다.
+# 거북이 위치 조종은 이 서비스로 한다.
+string name      # 내 이름 (필수 — 이 이름의 거북이를 움직인다)
+float32 x        # 목표 x
+float32 y        # 목표 y
+---
+bool arrived     # 도착 성공 여부
+float32 x        # 도착한 x
+float32 y        # 도착한 y
+string message   # 실패 이유

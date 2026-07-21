@@ -1,0 +1,19 @@
+# 슛 액션 — 내가 서 있는 반대 방향으로 공을 강하게 찬다.
+# 차고 나면 1초간 정지(frozen)되며, 남은 시간이 feedback 으로 흘러나온다.
+# 시간이 걸리고 진행 상황을 보고하므로 액션이 맞는 작업이다.
+# Goal
+string name          # 내 이름 (필수 — 이 이름의 거북이가 찬다)
+float32 power        # 슛 세기 0.0 ~ 1.0
+---
+# Result
+bool kicked          # 실제로 찼는지 (공이 사거리 안이었는지)
+bool goal            # 골 성공 여부
+bool blocked         # 키퍼가 막았는지
+float32 ball_x       # 공이 멈춘 x
+float32 ball_y       # 공이 멈춘 y
+string message       # 실패 이유 또는 결과 설명
+---
+# Feedback
+float32 freeze_left  # 슛 후 남은 정지 시간(초) — 뷰어 카운트다운과 같은 값
+float32 ball_x       # 날아가는 중인 공의 x
+float32 dist_to_goal # 골대까지 남은 거리
